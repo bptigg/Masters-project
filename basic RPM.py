@@ -5,6 +5,8 @@ from scipy import sparse
 import matplotlib.pyplot as plt
 from mpl_toolkits import mplot3d
 import qutip as qt
+from multiprocessing import Process
+import multiprocessing
 
 
 operator_function_mapping = {
@@ -128,7 +130,7 @@ def polar_to_cart(theta : float, phi : float): #r = 1, theta = inclanation, phi 
     return np.array([x,y,z])
 
 
-def radical_pair_model(model : structure):
+def radical_pair_model(model : structure, processes : int):
     DDSE = point_dipole_dipole_coupling(model.get_electron_sep()) * (2*np.pi)
     #DDSE = 0 * DDSE #dipole dipole spin exchange
 
@@ -161,20 +163,26 @@ def radical_pair_model(model : structure):
     t_list = np.linspace(0,t_max, int(np.ceil(1000*t_max)))
 
     #tolerance options
+    global opt
     opt = qt.Options()
     opt.atol = model_parameters['absolute tolerance']
     opt.rtol = model_parameters['relative tolerance']
+
     
 
     yields = []
     index = 0
     step = 0
 
-    len_theta = len(orientation[0])
+    global len_theta
+    global operations
+
+    len_theta  = len(orientation[0])
     operations = len(orientation) * len_theta
 
-    fig = plt.figure()
-    ax = plt.axes(projection='3d')
+
+    #fig = plt.figure()
+    #ax = plt.axes(projection='3d')
 
     first = True
 
@@ -182,12 +190,79 @@ def radical_pair_model(model : structure):
         step = new_step
     else:
         step = model_parameters['angle_step']
-    for phi in orientation:
-        yeild_phi = []
 
-        x = []
-        y = []
-        z = []
+    number_of_cores = multiprocessing.cpu_count()
+    cores_per_process = float(number_of_cores) / float(processes)
+    cores_per_process = int(np.floor(cores_per_process))
+    opt.num_cpus = cores_per_process
+    opt.openmp_threads = cores_per_process
+
+    return_data = []
+
+    process_id = []
+    for i in range(0,processes):
+        process_id.append()
+
+    
+
+    simulation(dims, H_0, orientation, step, rho_0, initial_projection_operator, t_max, K, return_data)
+
+
+    
+    ##for phi in orientation:
+    ##    yeild_phi = []
+
+    ##    x = []
+    ##    y = []
+    ##    z = []
+    ##    index_2 = 0
+    ##    for theta in phi:
+    ##        ori = polar_to_cart(theta, index * step)
+
+    ##        if first == False and (theta == np.pi or theta == 0):
+
+    ##            print("Operation: {}/{}".format(index*len_theta + index_2 + 1, operations))
+    ##            index_2 = index_2 + 1
+
+    ##            continue
+    ##        
+    ##        x.append(ori[0])
+    ##        y.append(ori[1])
+    ##        z.append(ori[2])
+
+    ##        B_field = model_parameters['B_0'] * ori
+
+    ##        H_zee = make_Hamiltionian(dims, 0, B_field) + make_Hamiltionian(dims, 1, B_field)
+    ##        H_eff = H_0 + H_zee - 1j*K
+
+    ##        L_eff = -1j*qt.spre(H_eff) + 1j*qt.spost(H_eff.conj().trans())
+    ##        sol = qt.mesolve(L_eff, rho_0, t_list, e_ops=[initial_projection_operator], options=opt, progress_bar=True)
+    ##        ps = sol.expect[0]
+    ##        yr = model_parameters['k_b'] * integrate.simps(ps, t_list)
+    ##        yeild_phi.append(yr)
+    ##        print("Operation: {}/{}".format(index*len_theta + index_2 + 1, operations))
+    ##        index_2 = index_2 + 1
+    ##        #yeild_phi.append(0)
+
+    ##    yields.append(yeild_phi)
+    ##    first = False
+    ##    #p = ax.scatter3D(x,y,z, c = yeild_phi, cmap = 'viridis')
+    ##    index = index + 1
+    
+    print(yields)
+    #plt.show()
+
+
+def simulation(dims, H_0, orientation, step, rho_0, ps, t_max, K, return_data):
+
+    t_list = np.linspace(0,t_max, int(np.ceil(1000*t_max)))
+    
+    x = []
+    y = []
+    z = []
+    yields = []
+
+    for phi in orientation:
         index_2 = 0
         for theta in phi:
             ori = polar_to_cart(theta, index * step)
@@ -209,27 +284,22 @@ def radical_pair_model(model : structure):
             H_eff = H_0 + H_zee - 1j*K
 
             L_eff = -1j*qt.spre(H_eff) + 1j*qt.spost(H_eff.conj().trans())
-            sol = qt.mesolve(L_eff, rho_0, t_list, e_ops=[initial_projection_operator], options=opt, progress_bar=True)
+            sol = qt.mesolve(L_eff, rho_0, t_list, e_ops=[ps], options=opt, progress_bar=True)
             ps = sol.expect[0]
             yr = model_parameters['k_b'] * integrate.simps(ps, t_list)
-            yeild_phi.append(yr)
+            yields.append(yr)
             print("Operation: {}/{}".format(index*len_theta + index_2 + 1, operations))
             index_2 = index_2 + 1
-            #yeild_phi.append(0)
 
-        yields.append(yeild_phi)
         first = False
-        p = ax.scatter3D(x,y,z, c = yeild_phi, cmap = 'viridis')
         index = index + 1
-    print(yields)
-    fig.colorbar(p)
-    plt.show()
 
-
+    return_data.append[[x],[y],[z],[yields]]
+    return return_data
 
 
 def main():
-    radical_pair_model(structure([1,1], [Nuclei['N5'], Nuclei['N1']], model_parameters['rfW']))
+    radical_pair_model(structure([1,1], [Nuclei['N5'], Nuclei['N1']], model_parameters['rfW']), 4)
 
 
 main()
