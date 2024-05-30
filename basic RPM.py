@@ -5,9 +5,12 @@ from scipy import sparse
 import matplotlib.pyplot as plt
 from mpl_toolkits import mplot3d
 import qutip as qt
+from qutip.fastsparse import fast_csr_matrix
 import multiprocessing
 import datetime
 import select
+import time
+from scipy.integrate import ode
 
 
 operator_function_mapping = {
@@ -30,7 +33,7 @@ model_parameters = {
     'B_0' : 1.4 * 2 * np.pi,
     'k_b' : 2., #1/us
     'k_f' : 1.,
-    'angle_step' : 2*np.pi / 72,
+    'angle_step' : 2*np.pi / 36,
     'run_time' : 20,  
     'absolute tolerance' : 1e-10,
     'relative tolerance' : 1e-8
@@ -47,8 +50,6 @@ Nuclei = {
                                            [0.0460172, -0.564764,  0.453074]])
     
 }
-
-
 
 
 class structure:
@@ -94,6 +95,7 @@ def zero_operator(dims):
 
 def make_Hamiltionian(dims, ind, parvec): #single particle interaction
     axes = ['x', 'y', 'z']
+    a = zip(parvec, axes)
     components = [v * make_spin_operator(dims, [(ind,ax)]) for  v, ax in zip(parvec, axes) if v != 0]
     if components:
         return sum(components)
@@ -108,7 +110,9 @@ def make_Hamiltonian_2(dims, ind_1, ind_2, parmat):
            if parmat[i,j] != 0:
                components.append(parmat[i,j] * make_spin_operator(dims, [(ind_1,axes[i]), (ind_2,axes[j])]))
     if components:
-        return sum(components)
+        a = sum(components)
+        print(a)
+        return a
     else:
         return zero_operator(dims)
 
@@ -123,6 +127,9 @@ def point_dipole_dipole_coupling(r):
         d = C / r_norm**3
         e = r / r_norm
         A = d * (3 * e[:,np.newaxis] * e[np.newaxis,:] - np.eye(3))
+
+        print(e[:,np.newaxis])
+        print(e[np.newaxis,:])
     
     return A 
 
@@ -141,6 +148,7 @@ def radical_pair_model(model : structure, processes : int):
     dims = [2,2, *[round(2*I+1) for I in model.get_nuclear_spins()]]
 
     initial_projection_operator = 1/4 * make_spin_operator(dims, []) - make_Hamiltonian_2(dims, 0, 1, np.identity(3)) 
+    #print(initial_projection_operator)
     identity = make_spin_operator(dims, [])
     triplet_projection_operator = identity - initial_projection_operator
 
@@ -157,15 +165,15 @@ def radical_pair_model(model : structure, processes : int):
     new = False
 
     if(steps_2 == steps):
-        orientation = [*[np.arange(0 , 2* np.pi + model_parameters['angle_step']  , model_parameters['angle_step'],) for i in range(0,steps_2+1)]]
+        orientation = [*[np.arange(0 , 2* np.pi + model_parameters['angle_step']  , model_parameters['angle_step'],) for i in range(0,steps_2)]]
     else:
         new_step = (np.pi / steps_2)
         new = True
-        orientation = [*[np.arange(0, 2* np.pi + new_step, new_step) for i in range(0,steps_2+1)]]
+        orientation = [*[np.arange(0, 2* np.pi + new_step, new_step) for i in range(0,steps_2)]]
 
     t_max = model_parameters['run_time'] / model_parameters['k_f']
-    #t_list = np.linspace(0,t_max, int(np.ceil(1000*t_max)))
 
+    orientation = [[1,0,0]]
     #tolerance options
     global opt
     opt = qt.Options()
@@ -173,8 +181,6 @@ def radical_pair_model(model : structure, processes : int):
     opt.rtol = model_parameters['relative tolerance']
 
     step = 0
-    global operation_number
-    operation_number = 0
     operation_lock = multiprocessing.Lock()
 
     global len_theta
@@ -195,11 +201,16 @@ def radical_pair_model(model : structure, processes : int):
     for i in range(0,processes):
         orientations.append(orientation[i*size : (i+1)*size])
 
+    if(len(orientations) * size != len(orientation)):
+        orientations.append(orientation[len(orientations) * size - 1 : len(orientation) - 1])
+        processes = processes + 1
+
     number_of_cores = multiprocessing.cpu_count()
     cores_per_process = float(number_of_cores) / float(processes)
     cores_per_process = int(np.floor(cores_per_process))
     opt.num_cpus = cores_per_process
     opt.openmp_threads = cores_per_process
+
 
     len_theta  = len(orientation[0])
     operations = (len(orientation) * len_theta) / processes
@@ -210,10 +221,9 @@ def radical_pair_model(model : structure, processes : int):
     for i in range(0,processes):
         if __name__ == '__main__':
             reciever, sender = multiprocessing.Pipe(True)
-            reciever_2, sender_2 = multiprocessing.Pipe(True)
-            p = multiprocessing.Process(target = simulation, args = (dims, H_0, orientations[i], step, rho_0, initial_projection_operator, t_max, K, operation_lock, i * size, [sender, reciever_2]))
+            p = multiprocessing.Process(target = simulation, args = (dims, H_0, orientations[i], step, rho_0, initial_projection_operator, t_max, K, operation_lock, i * size, [sender], operations, opt))
             process_id.append(p)
-            pipe.append([reciever, sender_2])
+            pipe.append([reciever])
 
     none_list = []
     for p in process_id:
@@ -227,24 +237,6 @@ def radical_pair_model(model : structure, processes : int):
         while(len(process_id) != 0):
             remove = []
             for i in range(0,len(process_id)):
-                joined = False
-
-                #if(pipe[i][1].poll(0.01)):
-                #    if(pipe[i][1].recv() == None):
-                #        print("Process {} ended".format(process_id[i]._identity))
-                #
-                #elif(pipe[i][0].poll(0.01) == True):
-                #    results.append(pipe[i][0].recv())
-                #    if(pipe[i][1].closed == False):
-                #        if(process_id[i].is_alive() == True):
-                #            pipe[i][1].send(True)
-
-                #process_id[i].join(0.01)
-                #if(process_id[i].is_alive() == False):
-                #    remove.append(True)
-                #    joined = True
-                #else:
-                #    remove.append(False)
 
                 process_id[i].join(0.01)
                 if(process_id[i].is_alive() == False):
@@ -260,23 +252,12 @@ def radical_pair_model(model : structure, processes : int):
                         else:
                             results.append(result)
 
-                
-                
-                #if(joined != True and pipe[i][0].closed == False):
-                #    if(pipe[i][0].poll(0.1) == True):
-                #        results.append(pipe[i][0].recv())
-                #        if(pipe[i][1].closed == False):
-                #            pipe[i][1].send(True)
-                
-
             removed = 0
             for i in range(0, len(remove)):
                 if remove[i]:
                     del(process_id[i-removed])
                     del(pipe[i-removed])
                     removed = removed+1
-
-        #results = [x.recv() for x in pipe]
 
         data = [[],[],[],[]]
         for i in results:
@@ -295,10 +276,10 @@ def radical_pair_model(model : structure, processes : int):
             f.write(line)
         f.close()
 
-def simulation(dims, H_0, orientation, step, rho_0, Ps, t_max, K, operation_lock : multiprocessing.Lock , start_index, return_data):
-    global operation_number
+def simulation(dims, H_0, orientation, step, rho_0, Ps, t_max, K, operation_lock : multiprocessing.Lock , start_index, return_data, operations, opt):
+    operation_number = 0
     t_list = np.linspace(0,t_max, int(np.ceil(1000*t_max)))
-    
+
     x = []
     y = []
     z = []
@@ -317,14 +298,15 @@ def simulation(dims, H_0, orientation, step, rho_0, Ps, t_max, K, operation_lock
             B_field = model_parameters['B_0'] * ori
 
             H_zee = make_Hamiltionian(dims, 0, B_field) + make_Hamiltionian(dims, 1, B_field)
-            H_eff = H_0 + H_zee - 1j*K
+            H_eff = H_0 + H_zee# - 1j*K
 
-            #L_eff = -1j*qt.spre(H_eff) + 1j*qt.spost(H_eff.conj().trans())
+            L_eff = -1j*qt.spre(H_eff) + 1j*qt.spost(H_eff.conj().trans())
+            ps, t_list = solve(L_eff, rho_0, t_list, Ps, t_max)
             #sol = qt.mesolve(L_eff, rho_0, t_list, e_ops=[Ps], options=opt)
-            #ps = sol.expect[0]
-            #yr = model_parameters['k_b'] * integrate.simps(ps, t_list)
-            #yields.append(yr)
-            yields.append(ori[2]+ori[1]+ori[0])
+            yr = model_parameters['k_f'] * integrate.simps(ps * np.exp(-model_parameters['k_f']*t_list), t_list)
+            print(yr)
+            plt.plot(t_list[:1000], ps[:1000])
+            yields.append(yr)
             operation_lock.acquire()
             operation_number = operation_number + 1
             
@@ -338,37 +320,65 @@ def simulation(dims, H_0, orientation, step, rho_0, Ps, t_max, K, operation_lock
             z.clear()
             yields.clear()
 
-            #if(operation_number % 10 == 0):
-            #    #have a pipe that sends a boolean back from the main thread to tell the sub threads that it's okay to send data back up the pipe    
-            #    if(send_data_permission == False):
-            #        if(return_data[1].poll(0.1) == True):
-            #            permission = [return_data[1].recv()]      
-            #            send_data_permission = permission[0]
-            #    return_data[0].send([x,y,z,yields])
-            #    send_data_permission = False
-            #    x.clear()
-            #    y.clear()
-            #    z.clear()
-            #    yields.clear()
-
             print("Operation: {}/{}".format(operation_number, operations))
             operation_lock.release()
         index = index + 1  
     
-    #send_data_permission = False
-    #while(send_data_permission == False):
-    #    if(return_data[1].poll() == True):
-    #        permission = [return_data[1].recv()]      
-    #        send_data_permission = permission[0]
-
     return_data[0].send(None)
 
+def solve(L, rho_naught, t_list, projection_operator, tmax):
 
-def main():
-    radical_pair_model(structure([1,1], [Nuclei['N5'], Nuclei['N1']], model_parameters['rfW']), 6)
+    dim = rho_naught.shape[0]
+    func = lambda t,psi: -1j * np.reshape(np.dot(L, psi),-1)
+
+    integrator = ode(func).set_integrator('zvode', atol = 1e-12, rtol = 1e-10, method = 'adams', order = 12)
+    integrator.set_initial_value(np.array(rho_naught).reshape(-1), 0.0)
+
+    traj = [(0.0,3)]
+    dt = 0.001
+    start = time.time()
+    while integrator.successful() and integrator.t < tmax:
+        rho = integrator.integrate(integrator.t + dt).reshape(dim, -1)
+        traj.append((integrator.t, np.trace(np.dot(rho.transpose().conjugate(), projection_operator * rho))))
+    stop = time.time()
+    print("{} sec".format(stop - start))
+    t_list = np.array([x for x,y in traj])
+    ps = np.array([np.real(y) for x,y in traj]) / 3
+    return ps, t_list
+
+def main(core_testing = False):
+
+    if __name__ == "__main__":
+        if(core_testing):
+            performance = []
+            index = 0
+            for i in range(8,0,-1):
+                value = (np.pi / model_parameters['angle_step']) / i 
+                if(int(value) == value):
+                    performance.append([i])
+                    starttime = time.time()
+                    radical_pair_model(structure([1], [Nuclei['N5']], model_parameters['rfW']), i)
+                    total_time = time.time() - starttime
+                    performance[index].append(total_time)
+                    index = index + 1
+
+                    time.sleep(120)
+
+            now = datetime.datetime.now()
+            dt_string = now.strftime("%d_%m_%Y %H_%M_%S")
+            f = open(dt_string + "_performance.txt", "w")
+
+            for i in range(0,len(performance)):
+                line = str(performance[i][0]) + " " + str(performance[i][1]) + "\n"
+                f.write(line)
+            f.close()
+
+        else:
+            radical_pair_model(structure([1], [Nuclei['N5']], model_parameters['rfW']), 8)
 
 
 
-main()
+
+main(core_testing=False)
 
 
