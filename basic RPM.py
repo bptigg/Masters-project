@@ -306,6 +306,7 @@ def simulation(dims, H_0, orientation, step, rho_0, Ps, t_max, K, operation_lock
             yr = model_parameters['k_f'] * integrate.simps(ps * np.exp(-model_parameters['k_f']*t_list), t_list)
             print(yr)
             plt.plot(t_list[:1000], ps[:1000])
+            plt.show()
             yields.append(yr)
             operation_lock.acquire()
             operation_number = operation_number + 1
@@ -339,7 +340,7 @@ def solve(L, rho_naught, t_list, projection_operator, tmax):
     start = time.time()
     while integrator.successful() and integrator.t < tmax:
         rho = integrator.integrate(integrator.t + dt).reshape(dim, -1)
-        traj.append((integrator.t, np.trace(np.dot(rho.transpose().conjugate(), projection_operator * rho))))
+        traj.append((integrator.t, np.trace(projection_operator * rho)))
     stop = time.time()
     print("{} sec".format(stop - start))
     t_list = np.array([x for x,y in traj])
